@@ -82,10 +82,9 @@ jobs:
           REPO: ${{ github.repository }}
           MERGE_GROUP_SHA: ${{ github.sha }}
         run: |
-
           echo "Clearing arm-status on merge-group SHA:"
           echo "${MERGE_GROUP_SHA}"
-
+      
           gh api \
             --method POST \
             "/repos/${REPO}/statuses/${MERGE_GROUP_SHA}" \
