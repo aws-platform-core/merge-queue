@@ -17,53 +17,65 @@ jobs:
       - name: Get merge group information
         id: merge-group
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
           MERGE_GROUP_SHA: ${{ github.sha }}
+          MERGE_GROUP_REF: ${{ github.ref }}
         run: |
           echo "Merge group SHA: ${MERGE_GROUP_SHA}"
+          echo "Merge group ref: ${MERGE_GROUP_REF}"
 
-          gh api \
-            "/repos/${REPO}/commits/${MERGE_GROUP_SHA}/pulls" \
-            --header "Accept: application/vnd.github+json" \
-            --jq '.[] | "\(.number)|\(.head.sha)"' \
-            > /tmp/prs.txt
+          # Example:
+          # refs/heads/gh-readonly-queue/main/pr-3-a5a18c7...
 
-          echo "PRs in merge group:"
-          cat /tmp/prs.txt
+          PR_NUMBER=$(echo "${MERGE_GROUP_REF}" | sed -n 's|.*/pr-\([0-9]*\)-.*|\1|p')
 
-      - name: Validate ARM status
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-
-          if [ ! -s /tmp/prs.txt ]; then
-            echo "No PR found for merge group"
+          if [ -z "${PR_NUMBER}" ]; then
+            echo "ERROR: Could not extract PR number from merge group ref"
             exit 1
           fi
 
-          while IFS='|' read -r PR_NUMBER PR_HEAD_SHA
-          do
-            echo "Checking PR #${PR_NUMBER}"
-            echo "PR HEAD SHA: ${PR_HEAD_SHA}"
+          echo "PR number: ${PR_NUMBER}"
 
-            ARM_STATUS=$(gh api \
-              "/repos/${REPO}/commits/${PR_HEAD_SHA}/status" \
-              --jq '[.statuses[] | select(.context=="arm-status")] | last | .state // "missing"')
+          echo "PR_NUMBER=${PR_NUMBER}" >> "${GITHUB_OUTPUT}"
 
-            echo "ARM status: ${ARM_STATUS}"
+      - name: Get PR head SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.merge-group.outputs.PR_NUMBER }}
+        run: |
 
-            if [ "${ARM_STATUS}" != "success" ]; then
-              echo "ARM has NOT approved PR #${PR_NUMBER}"
-              exit 1
-            fi
+          PR_HEAD_SHA=$(gh api \
+            "/repos/${REPO}/pulls/${PR_NUMBER}" \
+            --jq '.head.sha')
 
-            echo "ARM approved PR #${PR_NUMBER}"
+          echo "PR #${PR_NUMBER}"
+          echo "PR HEAD SHA: ${PR_HEAD_SHA}"
 
-          done < /tmp/prs.txt
+          echo "PR_HEAD_SHA=${PR_HEAD_SHA}" >> "${GITHUB_OUTPUT}"
 
-      - name: Propagate ARM status to merge group
+      - name: Check ARM status on PR HEAD
+        id: arm-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_HEAD_SHA: ${{ steps.pr.outputs.PR_HEAD_SHA }}
+        run: |
+
+          ARM_STATUS=$(gh api \
+            "/repos/${REPO}/commits/${PR_HEAD_SHA}/status" \
+            --jq '[.statuses[] | select(.context=="arm-status")] | last | .state // "missing"')
+
+          echo "ARM status on PR HEAD: ${ARM_STATUS}"
+
+          if [ "${ARM_STATUS}" != "success" ]; then
+            echo "ARM has NOT approved this PR."
+            exit 1
+          fi
+
+          echo "ARM has approved this PR."
+
+      - name: Clear ARM status on merge group
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -78,6 +90,6 @@ jobs:
             "/repos/${REPO}/statuses/${MERGE_GROUP_SHA}" \
             --field state="success" \
             --field context="arm-status" \
-            --field description="ARM approved PR and merge-group is authorized"
+            --field description="ARM approval propagated from PR"
 
-          echo "Merge-group ARM status cleared."
+          echo "ARM status cleared on merge-group SHA."
