@@ -76,6 +76,15 @@ jobs:
 
           echo "ARM has approved this PR."
 
+      - name: Check token permissions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            /repos/${{ github.repository }} \
+            --jq '.permissions'
+
       - name: Clear ARM status on merge group
         env:
           GH_TOKEN: ${{ github.token }}
