@@ -1,0 +1,83 @@
+name: ARM Merge Queue Authorization
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  arm-merge-group:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Get merge group information
+        id: merge-group
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_SHA: ${{ github.sha }}
+        run: |
+          echo "Merge group SHA: ${MERGE_GROUP_SHA}"
+
+          gh api \
+            "/repos/${REPO}/commits/${MERGE_GROUP_SHA}/pulls" \
+            --header "Accept: application/vnd.github+json" \
+            --jq '.[] | "\(.number)|\(.head.sha)"' \
+            > /tmp/prs.txt
+
+          echo "PRs in merge group:"
+          cat /tmp/prs.txt
+
+      - name: Validate ARM status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+
+          if [ ! -s /tmp/prs.txt ]; then
+            echo "No PR found for merge group"
+            exit 1
+          fi
+
+          while IFS='|' read -r PR_NUMBER PR_HEAD_SHA
+          do
+            echo "Checking PR #${PR_NUMBER}"
+            echo "PR HEAD SHA: ${PR_HEAD_SHA}"
+
+            ARM_STATUS=$(gh api \
+              "/repos/${REPO}/commits/${PR_HEAD_SHA}/status" \
+              --jq '[.statuses[] | select(.context=="arm-status")] | last | .state // "missing"')
+
+            echo "ARM status: ${ARM_STATUS}"
+
+            if [ "${ARM_STATUS}" != "success" ]; then
+              echo "ARM has NOT approved PR #${PR_NUMBER}"
+              exit 1
+            fi
+
+            echo "ARM approved PR #${PR_NUMBER}"
+
+          done < /tmp/prs.txt
+
+      - name: Propagate ARM status to merge group
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_SHA: ${{ github.sha }}
+        run: |
+
+          echo "Clearing arm-status on merge-group SHA:"
+          echo "${MERGE_GROUP_SHA}"
+
+          gh api \
+            --method POST \
+            "/repos/${REPO}/statuses/${MERGE_GROUP_SHA}" \
+            --field state="success" \
+            --field context="arm-status" \
+            --field description="ARM approved PR and merge-group is authorized"
+
+          echo "Merge-group ARM status cleared."
